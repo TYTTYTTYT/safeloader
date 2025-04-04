@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "safeloader"
+version = "0.0.0"
+requires-python = ">= 3.8"
+description = "Worried about corrupted data? Need flow control during training? Handling TBs of data? — Safeloader has you covered!"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICEN[CS]E*"]
+keywords = ["dataloader", "safe", "qps", "process pool", "parallel", "machine learning", "pytorch"]
+classifiers = [
+  "Topic :: Utilities",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: Apache Software License",
+  "Topic :: Database :: Database Engines/Servers",
+  "Topic :: Database",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Information Technology"
+]
+dependencies = [
+  "numpy",
+  "pandas",
+  "pyarrow",
+]
+authors = [
+  {name = "Yintao Tai", email = "Tai.Yintao@gmail.com"},
+]
+maintainers = [
+  {name = "Yintao Tai", email = "Tai.Yintao@gmail.com"},
+]
+
+[project.urls]
+Homepage = "https://example.com"
+Documentation = "https://readthedocs.org"
+Repository = "https://github.com/me/spam.git"
+"Bug Tracker" = "https://github.com/me/spam/issues"
+Changelog = "https://github.com/me/spam/blob/master/CHANGELOG.md"
