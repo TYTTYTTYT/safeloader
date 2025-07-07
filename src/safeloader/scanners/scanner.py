@@ -1,7 +1,9 @@
+from typing import Iterable, Iterator
+
 from ..bases import ChildrenTrackable, Row
 
 
-class Scanner(ChildrenTrackable):
+class Scanner(ChildrenTrackable, Iterable[Row]):
     """
     Scanner is a base class for all scanners.
     It provides the basic interface for scanning a single file.
@@ -25,3 +27,11 @@ class Scanner(ChildrenTrackable):
         This method should be implemented by subclasses.
         """
         raise NotImplementedError('Please implement this method in children classes!')
+
+    def __iter__(self) -> Iterator[Row]:
+        """
+        Returns an iterator over the items in the scanner.
+        This method should not be overridden by subclasses.
+        """
+        for idx in range(len(self)):
+            yield self[idx]
