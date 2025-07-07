@@ -57,3 +57,16 @@ class ChildrenTrackable:
         if name not in children_dict:
             raise KeyError(f"Child class '{name}' not found in {cls.__name__}.")
         return children_dict[name]
+
+
+class CouldCountable:
+    """
+    A base class for iterators that can be counted.
+    A counted class should implement the __len__ method.
+    """
+
+    def is_countable(self) -> bool:
+        """
+        Returns True if the class is countable, meaning it implements the __len__ method.
+        """
+        return hasattr(self, '__len__') and callable(getattr(self, '__len__'))

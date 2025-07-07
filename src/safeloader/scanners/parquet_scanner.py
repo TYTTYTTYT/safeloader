@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from ..bases import Row
 from .scanner import Scanner
 
@@ -24,3 +26,11 @@ class ParquetScanner(Scanner):
         if idx < 0 or idx >= len(self):
             raise IndexError(f'Index {idx} out of range for Parquet file {self.path}')
         return self.parquet.iloc[idx].to_dict()
+
+    @classmethod
+    def check_file(cls, path: str) -> bool:
+        """
+        Checks if the file at the given path is a Parquet file or a directory.
+        This method checks the file extension to determine compatibility.
+        """
+        return path.lower().endswith('.parquet') or path.lower().endswith('.parq') or Path(path).is_dir()

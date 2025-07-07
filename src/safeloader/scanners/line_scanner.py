@@ -26,3 +26,11 @@ class LineScanner(Scanner):
             if i == idx:
                 return {'line': line.strip()}
         raise IndexError(f'Index {idx} out of range for text file {self.path}')
+
+    @classmethod
+    def check_file(cls, path: str) -> bool:
+        """
+        Checks if the file at the given path is a text file.
+        This method checks the file extension to determine compatibility.
+        """
+        return path.lower().endswith('.txt') or path.lower().endswith('.log')

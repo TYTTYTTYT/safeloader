@@ -1,9 +1,9 @@
 from typing import Iterable, Iterator
 
-from ..bases import ChildrenTrackable, Row
+from ..bases import ChildrenTrackable, Row, CouldCountable
 
 
-class Scanner(ChildrenTrackable, Iterable[Row]):
+class Scanner(ChildrenTrackable, Iterable[Row], CouldCountable):
     """
     Scanner is a base class for all scanners.
     It provides the basic interface for scanning a single file.
@@ -35,3 +35,11 @@ class Scanner(ChildrenTrackable, Iterable[Row]):
         """
         for idx in range(len(self)):
             yield self[idx]
+
+    @classmethod
+    def check_file(cls, path: str) -> bool:
+        """
+        Checks if the file at the given path is compatible with this scanner.
+        This method should be implemented by subclasses to provide file type checking.
+        """
+        raise NotImplementedError('Please implement this method in children classes!')

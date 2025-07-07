@@ -23,3 +23,11 @@ class JSONScanner(Scanner):
         if idx < 0 or idx >= len(self):
             raise IndexError(f'Index {idx} out of range for JSON file {self.path}')
         return self.json.iloc[idx].to_dict()
+
+    @classmethod
+    def check_file(cls, path: str) -> bool:
+        """
+        Checks if the file at the given path is a JSON file.
+        This method checks the file extension to determine compatibility.
+        """
+        return path.lower().endswith('.json')

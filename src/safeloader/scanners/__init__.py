@@ -5,4 +5,3 @@ from .parquet_scanner import ParquetScanner
 from .line_scanner import LineScanner
 from .json_scanner import JSONScanner
 from .imgfolder_scanner import ImageFolderScanner
-from .suffix_scanner import SuffixScanner

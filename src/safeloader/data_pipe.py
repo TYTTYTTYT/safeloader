@@ -27,9 +27,9 @@ class DataPipe(ChildrenTrackable):
                 yield self.map_fn(row)
         return pipe(source)
 
-    def is_stable(self) -> bool:
+    def is_countable(self) -> bool:
         """
-        Returns True if the DataPipe is stable, meaning it does not change the number of rows.
+        Returns True if the DataPipe is countable, meaning it does not change the number of rows.
         This can be overridden by subclasses to indicate stability.
         """
         if self.__class__.pipe_fn is DataPipe.pipe_fn:
@@ -61,8 +61,8 @@ class DataPipe(ChildrenTrackable):
                     source = pipe.pipe_fn(source)
                 return source
 
-            def is_stable(self) -> bool:
-                return all(pipe.is_stable() for pipe in self.pipes)
+            def is_countable(self) -> bool:
+                return all(pipe.is_countable() for pipe in self.pipes)
 
         return ChainedDataPipe([self, other])
 

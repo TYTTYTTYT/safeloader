@@ -67,3 +67,10 @@ class ImageFolderScanner(Scanner):
         if idx < 0 or idx >= len(self):
             raise IndexError(f'Index {idx} out of range for image folder {self.path}')
         return {'image_path': str(self.image_paths[idx].absolute())}
+
+    @classmethod
+    def check_file(cls, path: str) -> bool:
+        """
+        Checks if the directory at the given path is a folder.
+        """
+        return Path(path).is_dir()

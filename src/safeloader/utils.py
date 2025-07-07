@@ -10,9 +10,8 @@ def split_by_partition(list_len: int, partition_num: int, partition_id: int, all
     ids = list(range(list_len))
     if partition_num > list_len:
         if not allow_repeat:
-            if partition_id >= list_len:
-                return []
-            return [partition_id]
+            raise ValueError(f'partition_num {partition_num} is greater than list_len {list_len}, '
+                             'please set allow_repeat=True to allow repeated data')
         logger.warning(f'Number of list items: {list_len} is less than the number of partitions: {partition_num}, '
                        'please decrease the number of partitions to avoid repeated data')
         left = partition_num - list_len
