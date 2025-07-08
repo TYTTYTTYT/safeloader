@@ -5,8 +5,6 @@ import random
 from dataclasses import dataclass
 import logging
 
-from numpy import partition
-
 logger  = logging.getLogger(__name__)
 
 try:
