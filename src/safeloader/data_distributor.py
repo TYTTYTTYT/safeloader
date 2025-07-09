@@ -3,16 +3,18 @@ from typing import Iterable, Iterator, Optional
 import os
 import random
 from dataclasses import dataclass
+import ctypes
 import logging
 
 logger  = logging.getLogger(__name__)
 
 try:
-    from torch.multiprocessing import Queue
+    from torch.multiprocessing import Queue, Array, Lock
     logger.info("Using torch.multiprocessing.Queue for index queue.")
 except ImportError:
-    from multiprocessing import Queue
+    from multiprocessing import Queue, Array, Lock
     logger.info("Using multiprocessing.Queue for index queue.")
+from queue import Empty
 
 from .scanners import Scanner
 from .bases import Row, ChildrenTrackable, CouldCountable
@@ -35,6 +37,27 @@ class DistributorIndex:
                 f"epoch_num={self.epoch_num})")
 
 
+class SharedDistributorIndex:
+    def __init__(self):
+        # 3 integers: partition_index, row_index, epoch_num
+        self.array = Array(ctypes.c_longlong, 3)  # shared memory array of size 3
+        self.lock = Lock()
+
+    def set(self, index: DistributorIndex):
+        with self.lock:
+            self.array[0] = index.partition_index
+            self.array[1] = index.row_index
+            self.array[2] = index.epoch_num
+
+    def get(self) -> DistributorIndex:
+        with self.lock:
+            return DistributorIndex(
+                self.array[0],
+                self.array[1],
+                self.array[2]
+            )
+
+
 class DataDistributor(ChildrenTrackable, Iterable[Row], CouldCountable):
     """
     DataDistributor is a class that manages the distribution of data across multiple wokers.
@@ -50,7 +73,7 @@ class DataDistributor(ChildrenTrackable, Iterable[Row], CouldCountable):
         worker_num: int,
         base_seed: int,
         shuffle: bool = False,
-        index_queue: Optional[Queue[DistributorIndex]] = None
+        index: Optional[SharedDistributorIndex] = None
     ):
         super().__init__()
         self.path = path
@@ -59,7 +82,7 @@ class DataDistributor(ChildrenTrackable, Iterable[Row], CouldCountable):
         self.worker_num = worker_num
         self.base_seed = base_seed
         self.shuffle = shuffle
-        self.index_queue = index_queue
+        self._index = index
 
         if worker_id < 0 or worker_id >= worker_num:
             raise ValueError(f"worker_id {worker_id} is out of range [0, {worker_num})")
@@ -69,7 +92,6 @@ class DataDistributor(ChildrenTrackable, Iterable[Row], CouldCountable):
         self._partition_index = 0
         self._row_index = 0
         self._epoch_num = 0
-        self._index = 0
 
     def seek(self, partition_index: int, row_index: int, epoch_num: int) -> None:
         """
@@ -81,12 +103,10 @@ class DataDistributor(ChildrenTrackable, Iterable[Row], CouldCountable):
         self._epoch_num = epoch_num
 
     @property
-    def index(self) -> int:
-        """
-        Returns the current index of the worker in the data distribution.
-        This is used to track the number of rows processed by the worker.
-        """
-        return self._index
+    def index(self) -> DistributorIndex:
+        if self._index is not None:
+            return self._index.get()
+        return DistributorIndex(self._partition_index, self._row_index, self._epoch_num)
 
     @property
     def seed(self) -> str:
@@ -138,13 +158,12 @@ class IndexableDsitributor(DataDistributor):
                 entry = entries[self._row_index]
                 index = self.local_ids[entry]
 
-                if self.index_queue is not None:
-                    self.index_queue.put(DistributorIndex(0, self._row_index, self._epoch_num))
+                if self._index is not None:
+                    self._index.set(DistributorIndex(0, self._row_index, self._epoch_num))
 
                 yield scanner[index]
 
                 self._row_index += 1
-                self._index += 1
 
             self._epoch_num += 1
             self._partition_index = 0
@@ -199,13 +218,12 @@ class ShardedDistributor(DataDistributor):
                 while self._row_index < len(scanner_entries):
                     scanner_entry = scanner_entries[self._row_index]
 
-                    if self.index_queue is not None:
-                        self.index_queue.put(DistributorIndex(self._partition_index, self._row_index, self._epoch_num))
+                    if self._index is not None:
+                        self._index.set(DistributorIndex(self._partition_index, self._row_index, self._epoch_num))
 
                     yield scanner[scanner_entry]
 
                     self._row_index += 1
-                    self._index += 1
 
                 self._partition_index += 1
                 self._row_index = 0

@@ -1,16 +1,20 @@
 from __future__ import annotations
-from typing import Iterable, List, Optional, Callable, Dict, Hashable, Any, Tuple
+from typing import Iterable, Iterator, List, Optional, Callable, Dict, Hashable, Any, Tuple, Union
+from dataclasses import dataclass
 import time
 import logging
 
 logger  = logging.getLogger(__name__)
 
+from pexpect import ExceptionPexpect
+from sympy import inverse_sine_transform
 import torch
 from torch.multiprocessing import Queue, Process
+import atexit
 
 from .scanners import Scanner
-from .bases import Row, CouldCountable, Batch
-from .data_distributor import DataDistributor, DistributorIndex
+from .bases import Row, Batch
+from .data_distributor import DataDistributor, DistributorIndex, SharedDistributorIndex
 from .data_pipe import DataPipe
 
 def _default_collate_fn(rows: List[Row]) -> Batch:
@@ -51,9 +55,9 @@ def _worker_loop(
     worker_num: int,
     seed: int,
     shuffle: bool,
-    index_queue: Queue[DistributorIndex],
+    index: SharedDistributorIndex,
     initial_index: DistributorIndex,
-    result_queue: Queue[Batch],
+    result_queue: Queue[Union[Batch, StopIteration]],
     error_queue: Queue[Exception],
     countable_queue: Queue[Tuple[bool, int]],
     collate_fn: Optional[Callable[[List[Row]], Batch]] = None,
@@ -73,7 +77,6 @@ def _worker_loop(
         worker_num (int): The total number of workers.
         seed (int): The random seed for shuffling data.
         shuffle (bool): Whether to shuffle the data.
-        index_queue (Queue[DistributorIndex]): Queue for managing indices of distributed data.
         initial_index (DistributorIndex): Initial index for the worker.
         result_queue (Queue[Row]): Queue for storing processed rows.
         persistent (bool): Whether the worker should run persistently or exit after processing all data.
@@ -86,7 +89,7 @@ def _worker_loop(
         worker_num=worker_num,
         base_seed=seed,
         shuffle=shuffle,
-        index_queue=index_queue
+        index=index
     )
 
     # Initialize the data pipe
@@ -94,7 +97,6 @@ def _worker_loop(
 
     # Set the initial index
     distributor.seek(initial_index.partition_index, initial_index.row_index, initial_index.epoch_num)
-    data_source = data_pipe(distributor)
 
     if collate_fn is None:
         collate_fn = _default_collate_fn
@@ -118,19 +120,28 @@ def _worker_loop(
     else:
         min_gap = 0.0
 
-    tic = time.time()
+    if min_gap > 0.0:
+        tic = time.time()
+    else:
+        tic = None
 
-    current_batch = []
+    current_batch: List[Row] = []
     while True:
-        it = iter(data_source)
+        it = iter(data_pipe(distributor))
         while True:
             try:
-                now = time.time()
-                if now - tic < min_gap:
-                    time.sleep(min_gap - (now - tic))
-                tic = time.time()
+                if tic is not None:
+                    now = time.time()
+                    if now - tic < min_gap:
+                        time.sleep(min_gap - (now - tic))
+                    tic = time.time()
 
                 row = next(it)
+                if isinstance(row, Exception):
+                    logger.warning(f"WORKER_{worker_id} Error collating batch: {row}")
+                    error_queue.put(row)
+                    continue
+
                 current_batch.append(row)
 
                 # Check if the batch size is reached
@@ -139,27 +150,35 @@ def _worker_loop(
                         batch = collate_fn(current_batch)
 
                         result_queue.put(batch)
+                        current_batch = []
                 except Exception as e:
                     error_queue.put(e)
-                    logger.error(f"WORKER_{worker_id} Error collating batch: {e}")
-                finally:
+                    logger.warning(f"WORKER_{worker_id} Error collating batch: {e}")
                     current_batch = []
 
             except StopIteration as e:
                 if not drop_last and len(current_batch) > 0:
                     batch = collate_fn(current_batch)
                     result_queue.put(batch)
-                result_queue.put({'stop': [e]})
+                result_queue.put(e)
                 break
             except Exception as e:
                 error_queue.put(e)
-                logger.error(f"WORKER_{worker_id} Error processing row: {e}")
+                logger.warning(f"WORKER_{worker_id} Error processing row: {e}")
 
         if not persistent:
             break
 
 
-class Worker(Iterable[Batch], CouldCountable):
+@dataclass
+class WorkerItem:
+    err_cnt: int
+    current_index: DistributorIndex
+    batch: Batch
+    errors: List[Exception]
+
+
+class Worker(Iterable[WorkerItem]):
     """
     Worker class for processing data in a distributed manner.
     It initializes the worker loop with the provided parameters and manages the queues for results and errors.
@@ -171,17 +190,21 @@ class Worker(Iterable[Batch], CouldCountable):
         batch_size: int,
         scanner_type: type[Scanner],
         distributor_type: type[DataDistributor],
-        data_pipe_type: type[DataPipe],
         worker_id: int,
         worker_num: int,
         seed: int,
         shuffle: bool,
+        *,
+        data_pipe_type: Optional[type[DataPipe]] = None,
         current_index: Optional[DistributorIndex] = None,
         collate_fn: Optional[Callable[[List[Row]], Batch]] = None,
         persistent: bool = False,
         drop_last: bool = False,
         qps: float = 0.0,
-        buffer_size: int = 1
+        buffer_size: int = 1,
+        timeout: Optional[float] = 10.0,
+        restart_cnt: int = 5,
+        ignore_errors: bool = False
     ) -> None:
         """
         Initializes the Worker with the given parameters.
@@ -202,11 +225,17 @@ class Worker(Iterable[Batch], CouldCountable):
             drop_last (bool): Whether to drop the last incomplete batch if it is smaller than batch_size.
             qps (float): Queries per second rate limit for processing rows.
             buffer_size (int): The size of the result queue.
+            timeout (float): timeout seconds while getting the result.
+            restart_cnt (int): maximum number of worker restarting while the worker is dead. Restart count will be
+                               renewed every time the worker produced a batch.
         """
 
         if current_index is None:
             current_index = DistributorIndex(0, 0, 0)
         assert buffer_size > 0, f"buffer_size must be greater than 0, got {buffer_size}"
+
+        if data_pipe_type is None:
+            data_pipe_type = DataPipe
 
         self.path = path
         self.batch_size = batch_size
@@ -223,22 +252,28 @@ class Worker(Iterable[Batch], CouldCountable):
         self.drop_last = drop_last
         self.qps = qps
         self.buffer_size = buffer_size
+        self.timeout = timeout
+        self.restart_cnt = restart_cnt
+        self.ignore_errors = ignore_errors
 
-        self.index_queue = Queue[DistributorIndex]()
-        self.result_queue = Queue[Batch](maxsize=buffer_size)
-        self.error_queue = Queue[Exception]()
-        self.countble_queue = Queue[Tuple[bool, int]](1)
+        self._index = None
+        self.result_queue = None
+        self.error_queue = None
+        self.countble_queue = None
 
         self._worker_process: Optional[Process] = None
+
+        self.start(self.current_index)
 
     def start(self, initial_index: DistributorIndex) -> None:
         """
         Starts the worker process with the given initial index.
         """
-        assert self.index_queue.empty()
-        assert self.result_queue.empty()
-        assert self.error_queue.empty()
-        assert self.countble_queue.empty()
+        self._index = SharedDistributorIndex()
+        self._index.set(initial_index)
+        self.result_queue: Optional[Queue[Union[Batch, StopIteration]]] = Queue(maxsize=self.buffer_size)
+        self.error_queue: Optional[Queue[Exception]] = Queue()
+        self.countble_queue: Optional[Queue[Tuple[bool, int]]] = Queue(1)
 
         self._worker_process = torch.multiprocessing.Process(
             target=_worker_loop,
@@ -252,7 +287,7 @@ class Worker(Iterable[Batch], CouldCountable):
                 self.worker_num,
                 self.seed,
                 self.shuffle,
-                self.index_queue,
+                self._index,
                 initial_index,
                 self.result_queue,
                 self.error_queue,
@@ -267,5 +302,81 @@ class Worker(Iterable[Batch], CouldCountable):
         self._worker_process.start()
 
         countable = self.countble_queue.get()
-        if countable[0]:
-            self.__len__ = lambda x: countable[1]
+        if countable[0] and not self.ignore_errors:
+            self._is_countable = True
+            self._len = countable[1]
+        else:
+            self._is_countable = False
+            self._len = -1
+
+        atexit.register(self.stop)
+
+    def stop(self) -> None:
+        if self._worker_process is not None and self._worker_process.is_alive():
+            self._worker_process.terminate()
+            self._worker_process.join()
+            self._worker_process = None
+
+        if self.result_queue:
+            self.result_queue.close()
+            self.result_queue = None
+        if self.error_queue:
+            self.error_queue.close()
+            self.error_queue = None
+        if self.countble_queue:
+            self.countble_queue.close()
+            self.countble_queue = None
+
+    def __iter__(self) -> Iterator[WorkerItem]:
+        if self._worker_process is None or not self._worker_process.is_alive():
+            self.start(self.current_index)
+
+        def _iter() -> Iterator[WorkerItem]:
+            assert self.result_queue is not None
+            assert self.error_queue is not None
+            assert self._index is not None
+
+            while True:
+                batch = None
+                if self.ignore_errors:
+                    for _ in range(self.restart_cnt):
+                        try:
+                            batch = self.result_queue.get(block=True, timeout=self.timeout)
+                            break
+                        except Exception as e:
+                            logger.warning(f"WORKER_{self.worker_id}: Get batch failed! {e}")
+                        index = self._index.get()
+                        self.current_index = index
+                        self.stop()
+                        index.row_index += 1
+                        self.start(index)
+                    if batch is None:
+                        raise RuntimeError(f'WORKER_{self.worker_id}: Getting batch failed {self.restart_cnt} times!')
+                else:
+                    batch = self.result_queue.get(timeout=self.timeout)
+
+                if isinstance(batch, StopIteration):
+                    self.current_index.partition_index = 0
+                    self.current_index.row_index = 0
+                    self.current_index.epoch_num += 1
+                    break
+
+                err_cnt = 0
+                errors = []
+                if not self.error_queue.empty():
+                    if not self.ignore_errors:
+                        raise RuntimeError(f'WORKER_{self.worker_id}: Error happened! {self.error_queue.get()}')
+                    while not self.error_queue.empty():
+                        errors.append(self.error_queue.get())
+                        err_cnt += 1
+
+                self.current_index = self._index.get()
+                yield WorkerItem(err_cnt, self.current_index, batch, errors)
+
+        return _iter()
+
+    def is_countable(self) -> bool:
+        return self._is_countable
+
+    def __len__(self) -> int:
+        return self._len

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Iterable, List
+from typing import Iterable, List, Union
 
 from .bases import Row, ChildrenTrackable
 
@@ -17,15 +17,22 @@ class DataPipe(ChildrenTrackable):
         """
         return row
 
-    def pipe_fn(self, source: Iterable[Row]) -> Iterable[Row]:
+    def pipe_fn(self, source: Iterable[Union[Row, Exception]]) -> Iterable[Union[Row, Exception]]:
         """
         Default pipe function that returns the source as is.
         This can be overridden by subclasses to provide custom piping logic.
         """
-        def pipe(source: Iterable[Row]) -> Iterable[Row]:
+        def default_pipe(source: Iterable[Union[Row, Exception]]) -> Iterable[Union[Row, Exception]]:
             for row in source:
-                yield self.map_fn(row)
-        return pipe(source)
+                if isinstance(row, Exception):
+                    yield row
+                    continue
+
+                try:
+                    yield self.map_fn(row)
+                except Exception as e:
+                    yield e
+        return default_pipe(source)
 
     def is_countable(self) -> bool:
         """
@@ -36,7 +43,7 @@ class DataPipe(ChildrenTrackable):
             return True
         return False
 
-    def __call__(self, source: Iterable[Row]) -> Iterable[Row]:
+    def __call__(self, source: Iterable[Union[Row, Exception]]) -> Iterable[Union[Row, Exception]]:
         """
         Default pipe function that returns the source as is.
         This can be overridden by subclasses to provide custom piping logic.
@@ -56,7 +63,7 @@ class DataPipe(ChildrenTrackable):
                 super().__init__()
                 self.pipes = pipes
 
-            def pipe_fn(self, source: Iterable[Row]) -> Iterable[Row]:
+            def pipe_fn(self, source: Iterable[Union[Row, Exception]]) -> Iterable[Union[Row, Exception]]:
                 for pipe in self.pipes:
                     source = pipe.pipe_fn(source)
                 return source
